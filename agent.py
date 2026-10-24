@@ -185,5 +185,14 @@ async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
 agent.include(protocol, publish_manifest=True)
 
 if __name__ == "__main__":
+    import socket
+
+    with socket.socket() as s:
+        if s.connect_ex(("127.0.0.1", 8001)) == 0:
+            raise SystemExit(
+                "Port 8001 is already in use: the agent is probably already running in "
+                "another terminal. Stop it there (Ctrl+C) or run: lsof -iTCP:8001 -sTCP:LISTEN"
+            )
+
     print("\nJUDGE ADDRESS = %s\n" % agent.address)
     agent.run()
