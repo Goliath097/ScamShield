@@ -122,41 +122,35 @@ async def on_evidence(ctx: Context, sender: str, msg: InvestigationResult):
 
     try:
         prosecution = ask_asi(
-            "You are the PROSECUTION in a fraud assessment. Argue that this message IS a "
-            "scam. Cite the specific evidence given. Reference known Indian scam patterns "
-            "(fake KYC, digital arrest, courier fee, fake job offer, UPI refund) only where "
-            "the pattern actually matches. Be concrete, max 120 words. If the evidence is "
-            "genuinely weak, say your case is weak — do not invent evidence.",
+            "You are the PROSECUTION. Argue this message IS a scam in max 50 words. "
+            "Cite only the strongest 2 pieces of evidence given. No preamble, no "
+            "restating the message. If evidence is weak, say so in one line.",
             "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nINDICATORS: %s"
             % (suspect, msg.evidence, msg.indicators),
-            max_tokens=400,
+            max_tokens=300,
         )
 
         defence = ask_asi(
-            "You are the DEFENCE in a fraud assessment. Argue that this message may be "
-            "LEGITIMATE. Real companies do send OTPs, delivery updates and KYC reminders. "
-            "Point out what is normal and what the evidence does NOT prove. Be honest — if "
-            "the message is indefensible, say so plainly. Max 120 words.",
+            "You are the DEFENCE. Argue this message may be LEGITIMATE in max 50 words. "
+            "Real companies do send OTPs, delivery updates and KYC reminders. State what "
+            "the evidence does NOT prove. If indefensible, say so in one line and stop.",
             "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nINDICATORS: %s"
             % (suspect, msg.evidence, msg.indicators),
-            max_tokens=400,
+            max_tokens=300,
         )
 
         verdict = ask_asi(
-            "You are the JUDGE. Weigh the prosecution and defence against the hard evidence "
-            "and deliver a verdict. Format EXACTLY:\n\n"
+            "You are the JUDGE. Output EXACTLY this, nothing else:\n\n"
             "VERDICT: <SCAM | LIKELY SCAM | UNCLEAR | LIKELY GENUINE>\n"
             "CONFIDENCE: <0-100>%\n"
-            "WHY: <2-3 short lines citing the strongest evidence>\n"
-            "DO THIS NOW:\n- <3-4 concrete steps>\n"
-            "FORWARD THIS: <one short WhatsApp-ready warning for family, only if SCAM or LIKELY SCAM>\n\n"
-            "Hard evidence (domain age, lookalike domains) outweighs tone. If evidence was "
-            "unavailable, lower your confidence and say so. For any scam verdict always "
-            "include: do not pay or share OTP; call cybercrime helpline 1930; report at "
-            "cybercrime.gov.in.",
+            "WHY: <2 bullet points, max 15 words each>\n"
+            "DO THIS NOW:\n<3 bullets, max 10 words each>\n"
+            "FORWARD THIS: <one sentence, only if SCAM or LIKELY SCAM>\n\n"
+            "Hard evidence outweighs tone. If evidence was unavailable, lower confidence. "
+            "For scam verdicts always include: don't pay or share OTP; call 1930.",
             "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nPROSECUTION:\n%s\n\nDEFENCE:\n%s"
             % (suspect, msg.evidence, prosecution, defence),
-            max_tokens=700,
+            max_tokens=400,
         )
     except Exception as err:
         ctx.logger.exception("ASI:One failed: %s", err)
