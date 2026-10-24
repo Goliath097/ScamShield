@@ -14,8 +14,9 @@ A chat agent that answers questions using the ASI:One LLM. Talk to it from ASI:O
 ## Run
 
 ```bash
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env   # then fill in ASI1_API_KEY and AGENT_SEED
-source .venv/bin/activate
 python agent.py
 ```
 
