@@ -57,7 +57,7 @@ takedown feeds) plug into the Investigator without touching the verdict logic.
 
 | Name | Address | Role |
 |---|---|---|
-| `fetchathon-starter` (Judge) | `agent1qw7dkdsj6ss054z20el4dm4nzz6zsglxs38f4uxm0v960d0ltvfnj6g0vt9` | ACP front door, adversarial reasoning, verdict |
+| `ScamShield` (Judge) | `agent1qw7dkdsj6ss054z20el4dm4nzz6zsglxs38f4uxm0v960d0ltvfnj6g0vt9` | ACP front door, adversarial reasoning, verdict |
 | `scamshield-investigator` | `agent1q2cjphtv25ecjtqz05zznrpsnsmrsc5zwe54zhwkw5htaeadumwyjv8jn0f` | Evidence gathering, RDAP, extraction |
 
 ### Messages
