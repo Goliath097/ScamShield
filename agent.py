@@ -50,12 +50,11 @@ client = OpenAI(base_url="https://api.asi1.ai/v1", api_key=asi1_api_key)
 
 # Same name and seed as before -> same address -> registration is preserved.
 agent = Agent(
-    name="fetchathon-starter",
+    name="ScamShield",
     seed=os.environ["AGENT_SEED"],
     port=8001,
     mailbox=True,
     publish_agent_details=True,
-    readme_path="README.md",
 )
 
 protocol = Protocol(spec=chat_protocol_spec)
