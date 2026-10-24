@@ -131,10 +131,10 @@ def assess(suspect: str, evidence: str, indicators: str, tools_ok: bool) -> str:
         v = json.loads(raw[raw.index("{") : raw.rindex("}") + 1])
     except ValueError:
         v = {"summary": clip(raw, 40)}
-    return render(v, prosecution, defence, tools_ok)
+    return render(v, prosecution, defence, tools_ok, evidence)
 
 
-def render(v: dict, prosecution: str, defence: str, tools_ok: bool) -> str:
+def render(v: dict, prosecution: str, defence: str, tools_ok: bool, raw_evidence: str = "") -> str:
     verdict = str(v.get("verdict", "UNCLEAR")).upper().strip()
     if verdict not in BADGES:
         verdict = "UNCLEAR"
@@ -151,16 +151,23 @@ def render(v: dict, prosecution: str, defence: str, tools_ok: bool) -> str:
     if evidence:
         lines += ["", "**Evidence**"] + ["• %s" % e for e in evidence]
 
-    actions = [clip(a, 10) for a in (v.get("actions") or [])[:3] if a]
+        actions = [clip(a, 10) for a in (v.get("actions") or [])[:3] if a]
     if actions:
         lines += ["", "**Do now**"] + ["%d. %s" % (i, a) for i, a in enumerate(actions, 1)]
+
+    facts = [
+        l.strip()
+        for l in raw_evidence.splitlines()
+        if any(k in l for k in ("LOOKALIKE", "Registered:", "NEWLY REGISTERED", "UNRECOGNISED"))
+    ]
+    if facts:
+        lines += ["", "**Verified checks**"] + ["`%s`" % f for f in facts[:4]]
 
     lines += [
         "",
         "⚖️ _Prosecution:_ %s" % clip(prosecution, 22),
         "⚖️ _Defence:_ %s" % clip(defence, 22),
     ]
-
     if verdict in SCAM_VERDICTS:
         if v.get("forward"):
             lines += ["", "📤 **Forward to family**", "> %s" % clip(v["forward"], 30)]
