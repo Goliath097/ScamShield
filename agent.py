@@ -15,7 +15,11 @@ For each suspicious message:
 Terminal 2:   python agent.py
 """
 
+import asyncio
+import json
 import os
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -60,11 +64,19 @@ agent = Agent(
 protocol = Protocol(spec=chat_protocol_spec)
 
 HELP_TEXT = (
-    "ScamShield here. Paste any suspicious message — a job offer, a UPI refund "
-    "link, a courier SMS, a 'KYC expiring' alert — and I'll investigate the "
-    "links and payment IDs in it, argue both sides, and give you a verdict with "
-    "what to do next."
+    "🛡️ **ScamShield**\n"
+    "Paste a suspicious SMS, WhatsApp message, email or link. "
+    "I'll check it and tell you if it's a scam, and what to do."
 )
+
+BADGES = {"SCAM": "🔴", "LIKELY SCAM": "🟠", "UNCLEAR": "🟡", "LIKELY GENUINE": "🟢"}
+SCAM_VERDICTS = {"SCAM", "LIKELY SCAM"}
+MENTION_RE = re.compile(r"^(?:@\S+\s*)+")  # ASI:One prefixes "@agent1q..." to messages
+
+
+def clip(text, max_words: int) -> str:
+    words = str(text or "").split()
+    return " ".join(words[:max_words]) + ("…" if len(words) > max_words else "")
 
 
 def ask_asi(system: str, user: str, max_tokens: int = 900) -> str:
@@ -77,6 +89,88 @@ def ask_asi(system: str, user: str, max_tokens: int = 900) -> str:
         max_tokens=max_tokens,
     )
     return str(r.choices[0].message.content or "").strip()
+
+
+def assess(suspect: str, evidence: str, indicators: str, tools_ok: bool) -> str:
+    """Prosecution and defence in parallel, then a structured verdict rendered as a short card."""
+    case = "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nINDICATORS: %s" % (suspect, evidence, indicators)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        prosecution = pool.submit(
+            ask_asi,
+            "You are the PROSECUTION. In ONE sentence of max 20 words, argue this message "
+            "IS a scam using the single strongest piece of evidence. No preamble. If the "
+            "evidence is weak, say so.",
+            case,
+            120,
+        )
+        defence = pool.submit(
+            ask_asi,
+            "You are the DEFENCE. In ONE sentence of max 20 words, argue this message may be "
+            "LEGITIMATE, or say plainly that it is indefensible. No preamble.",
+            case,
+            120,
+        )
+        prosecution, defence = prosecution.result(), defence.result()
+
+    raw = ask_asi(
+        "You are the JUDGE. Weigh prosecution vs defence against the hard evidence. "
+        "Return ONLY this JSON object, no other text:\n"
+        '{"verdict": "SCAM" | "LIKELY SCAM" | "UNCLEAR" | "LIKELY GENUINE", '
+        '"confidence": <0-100>, '
+        '"summary": "<what this message is, max 10 words>", '
+        '"evidence": ["<up to 3 facts taken only from EVIDENCE/MESSAGE, max 10 words each>"], '
+        '"actions": ["<exactly 3 imperative steps for the user, max 8 words each>"], '
+        '"forward": "<WhatsApp-ready family warning, max 25 words; empty unless SCAM or LIKELY SCAM>"}\n'
+        "Rules: hard evidence (lookalike or newly registered domains, payment demands) "
+        "outweighs tone. If evidence tools were unavailable, lower confidence. Plain "
+        "words a parent understands; no jargon.",
+        "%s\n\nPROSECUTION: %s\nDEFENCE: %s" % (case, prosecution, defence),
+        400,
+    )
+    try:
+        v = json.loads(raw[raw.index("{") : raw.rindex("}") + 1])
+    except ValueError:
+        v = {"summary": clip(raw, 40)}
+    return render(v, prosecution, defence, tools_ok)
+
+
+def render(v: dict, prosecution: str, defence: str, tools_ok: bool) -> str:
+    verdict = str(v.get("verdict", "UNCLEAR")).upper().strip()
+    if verdict not in BADGES:
+        verdict = "UNCLEAR"
+    try:
+        confidence = max(0, min(100, int(v.get("confidence", 50))))
+    except (TypeError, ValueError):
+        confidence = 50
+
+    lines = ["%s **%s** · %d%% confident" % (BADGES[verdict], verdict, confidence)]
+    if v.get("summary"):
+        lines.append(clip(v["summary"], 14))
+
+    evidence = [clip(e, 12) for e in (v.get("evidence") or [])[:3] if e]
+    if evidence:
+        lines += ["", "**Evidence**"] + ["• %s" % e for e in evidence]
+
+    actions = [clip(a, 10) for a in (v.get("actions") or [])[:3] if a]
+    if actions:
+        lines += ["", "**Do now**"] + ["%d. %s" % (i, a) for i, a in enumerate(actions, 1)]
+
+    lines += [
+        "",
+        "⚖️ _Prosecution:_ %s" % clip(prosecution, 22),
+        "⚖️ _Defence:_ %s" % clip(defence, 22),
+    ]
+
+    if verdict in SCAM_VERDICTS:
+        if v.get("forward"):
+            lines += ["", "📤 **Forward to family**", "> %s" % clip(v["forward"], 30)]
+        lines += ["", "📞 Lost money? Call **1930** · cybercrime.gov.in"]
+    elif verdict == "LIKELY GENUINE":
+        lines += ["", "🔒 Even so, never share an OTP or PIN."]
+
+    if not tools_ok:
+        lines += ["", "⚠️ _Some checks were unavailable, so confidence is lower._"]
+    return "\n".join(lines)
 
 
 async def reply(ctx: Context, to: str, body: str):
@@ -97,6 +191,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     await ctx.send(sender, ChatAcknowledgement(acknowledged_msg_id=msg.msg_id))
 
     text = "".join(i.text for i in msg.content if isinstance(i, TextContent)).strip()
+    text = MENTION_RE.sub("", text).strip()
     ctx.logger.info("message to check (%d chars)" % len(text))
 
     if len(text) < 15:
@@ -121,60 +216,16 @@ async def on_evidence(ctx: Context, sender: str, msg: InvestigationResult):
     ctx.logger.info("evidence in — running prosecution and defence")
 
     try:
-        prosecution = ask_asi(
-            "You are the PROSECUTION. Argue this message IS a scam in max 50 words. "
-            "Cite only the strongest 2 pieces of evidence given. No preamble, no "
-            "restating the message. If evidence is weak, say so in one line.",
-            "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nINDICATORS: %s"
-            % (suspect, msg.evidence, msg.indicators),
-            max_tokens=300,
-        )
-
-        defence = ask_asi(
-            "You are the DEFENCE. Argue this message may be LEGITIMATE in max 50 words. "
-            "Real companies do send OTPs, delivery updates and KYC reminders. State what "
-            "the evidence does NOT prove. If indefensible, say so in one line and stop.",
-            "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nINDICATORS: %s"
-            % (suspect, msg.evidence, msg.indicators),
-            max_tokens=300,
-        )
-
-        verdict = ask_asi(
-            "You are the JUDGE. Output EXACTLY this, nothing else:\n\n"
-            "VERDICT: <SCAM | LIKELY SCAM | UNCLEAR | LIKELY GENUINE>\n"
-            "CONFIDENCE: <0-100>%\n"
-            "WHY: <2 bullet points, max 15 words each>\n"
-            "DO THIS NOW:\n<3 bullets, max 10 words each>\n"
-            "FORWARD THIS: <one sentence, only if SCAM or LIKELY SCAM>\n\n"
-            "Hard evidence outweighs tone. If evidence was unavailable, lower confidence. "
-            "For scam verdicts always include: don't pay or share OTP; call 1930.",
-            "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nPROSECUTION:\n%s\n\nDEFENCE:\n%s"
-            % (suspect, msg.evidence, prosecution, defence),
-            max_tokens=600,
-        )
+        body = await asyncio.to_thread(assess, suspect, msg.evidence, msg.indicators, msg.ok)
     except Exception as err:
         ctx.logger.exception("ASI:One failed: %s", err)
-        await reply(
-            ctx,
-            requester,
-            "I gathered the evidence but my reasoning service failed.\n\n%s\n\n"
-            "Treat any request for money or OTP as unsafe until verified. "
-            "Cyber helpline: 1930." % msg.evidence,
+        body = (
+            "🟡 **Couldn't finish the check**\n"
+            "Until you can verify it: don't click links, don't pay, don't share an OTP.\n\n"
+            "📞 Lost money? Call **1930** · cybercrime.gov.in"
         )
-        return
 
-    note = "" if msg.ok else "\n\n_Note: some evidence tools were unavailable; verdict is based on what could be checked._"
-
-    await reply(
-        ctx,
-        requester,
-        "🛡️ **SCAMSHIELD VERDICT**\n\n"
-        "%s\n\n"
-        "---\n**EVIDENCE**\n```\n%s\n```\n"
-        "---\n**PROSECUTION**\n%s\n\n"
-        "**DEFENCE**\n%s%s"
-        % (verdict, msg.evidence, prosecution, defence, note),
-    )
+    await reply(ctx, requester, body)
 
 
 @protocol.on_message(ChatAcknowledgement)
