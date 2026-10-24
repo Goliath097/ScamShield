@@ -10,7 +10,8 @@ For each suspicious message:
   4. PROSECUTION pass: argue it IS a scam, citing the evidence
   5. DEFENCE pass: argue it is legitimate
   6. VERDICT pass: weigh both, give confidence + concrete next steps
-  7. reply over ACP
+  7. reply over ACP with an ASI:One Interactive Card (cards.py); its buttons
+     come back as chat messages and are routed by cards.parse_action
 
 Terminal 2:   python agent.py
 """
@@ -27,11 +28,12 @@ from uagents import Agent, Context, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
     ChatMessage,
-    EndSessionContent,
+    MetadataContent,
     TextContent,
     chat_protocol_spec,
 )
 
+import cards
 from models import InvestigationRequest, InvestigationResult
 
 load_dotenv()
@@ -63,20 +65,7 @@ agent = Agent(
 
 protocol = Protocol(spec=chat_protocol_spec)
 
-HELP_TEXT = (
-    "🛡️ **ScamShield**\n"
-    "Paste a suspicious SMS, WhatsApp message, email or link. "
-    "I'll check it and tell you if it's a scam, and what to do."
-)
-
-BADGES = {"SCAM": "🔴", "LIKELY SCAM": "🟠", "UNCLEAR": "🟡", "LIKELY GENUINE": "🟢"}
-SCAM_VERDICTS = {"SCAM", "LIKELY SCAM"}
 MENTION_RE = re.compile(r"^(?:@\S+\s*)+")  # ASI:One prefixes "@agent1q..." to messages
-
-
-def clip(text, max_words: int) -> str:
-    words = str(text or "").split()
-    return " ".join(words[:max_words]) + ("…" if len(words) > max_words else "")
 
 
 def ask_asi(system: str, user: str, max_tokens: int = 900) -> str:
@@ -91,8 +80,8 @@ def ask_asi(system: str, user: str, max_tokens: int = 900) -> str:
     return str(r.choices[0].message.content or "").strip()
 
 
-def assess(suspect: str, evidence: str, indicators: str, tools_ok: bool) -> str:
-    """Prosecution and defence in parallel, then a structured verdict rendered as a short card."""
+def assess(suspect: str, evidence: str, indicators: str, tools_ok: bool):
+    """Prosecution and defence in parallel, then a structured verdict rendered as a card."""
     case = "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nINDICATORS: %s" % (suspect, evidence, indicators)
     with ThreadPoolExecutor(max_workers=2) as pool:
         prosecution = pool.submit(
@@ -106,7 +95,8 @@ def assess(suspect: str, evidence: str, indicators: str, tools_ok: bool) -> str:
         defence = pool.submit(
             ask_asi,
             "You are the DEFENCE. In ONE sentence of max 20 words, argue this message may be "
-            "LEGITIMATE, or say plainly that it is indefensible. No preamble.",
+            "LEGITIMATE. If nothing supports it, start with 'Nothing.' and give the reason. "
+            "No preamble.",
             case,
             120,
         )
@@ -123,73 +113,22 @@ def assess(suspect: str, evidence: str, indicators: str, tools_ok: bool) -> str:
         '"forward": "<WhatsApp-ready family warning, max 25 words; empty unless SCAM or LIKELY SCAM>"}\n'
         "Rules: hard evidence (lookalike or newly registered domains, payment demands) "
         "outweighs tone. If evidence tools were unavailable, lower confidence. Plain "
-        "words a parent understands; no jargon.",
+        "words a parent understands; no jargon, no markdown, ₹ for amounts.",
         "%s\n\nPROSECUTION: %s\nDEFENCE: %s" % (case, prosecution, defence),
         400,
     )
     try:
         v = json.loads(raw[raw.index("{") : raw.rindex("}") + 1])
     except ValueError:
-        v = {"summary": clip(raw, 40)}
-    return render(v, prosecution, defence, tools_ok, evidence)
+        v = {"summary": raw}
+    return cards.verdict_card(v, prosecution, defence, tools_ok)
 
 
-def render(v: dict, prosecution: str, defence: str, tools_ok: bool, raw_evidence: str = "") -> str:
-    verdict = str(v.get("verdict", "UNCLEAR")).upper().strip()
-    if verdict not in BADGES:
-        verdict = "UNCLEAR"
-    try:
-        confidence = max(0, min(100, int(v.get("confidence", 50))))
-    except (TypeError, ValueError):
-        confidence = 50
-
-    lines = ["%s **%s** · %d%% confident" % (BADGES[verdict], verdict, confidence)]
-    if v.get("summary"):
-        lines.append(clip(v["summary"], 14))
-
-    evidence = [clip(e, 12) for e in (v.get("evidence") or [])[:3] if e]
-    if evidence:
-        lines += ["", "**Evidence**"] + ["• %s" % e for e in evidence]
-
-        actions = [clip(a, 10) for a in (v.get("actions") or [])[:3] if a]
-    if actions:
-        lines += ["", "**Do now**"] + ["%d. %s" % (i, a) for i, a in enumerate(actions, 1)]
-
-    facts = [
-        l.strip()
-        for l in raw_evidence.splitlines()
-        if any(k in l for k in ("LOOKALIKE", "Registered:", "NEWLY REGISTERED", "UNRECOGNISED"))
-    ]
-    if facts:
-        lines += ["", "**Verified checks**"] + ["`%s`" % f for f in facts[:4]]
-
-    lines += [
-        "",
-        "⚖️ _Prosecution:_ %s" % clip(prosecution, 22),
-        "⚖️ _Defence:_ %s" % clip(defence, 22),
-    ]
-    if verdict in SCAM_VERDICTS:
-        if v.get("forward"):
-            lines += ["", "📤 **Forward to family**", "> %s" % clip(v["forward"], 30)]
-        lines += ["", "📞 Lost money? Call **1930** · cybercrime.gov.in"]
-    elif verdict == "LIKELY GENUINE":
-        lines += ["", "🔒 Even so, never share an OTP or PIN."]
-
-    if not tools_ok:
-        lines += ["", "⚠️ _Some checks were unavailable, so confidence is lower._"]
-    return "\n".join(lines)
-
-
-async def reply(ctx: Context, to: str, body: str):
-    await ctx.send(
-        to,
-        ChatMessage(
-            content=[
-                TextContent(type="text", text=body),
-                EndSessionContent(type="end-session"),
-            ]
-        ),
-    )
+async def reply(ctx: Context, to: str, text: str, card: MetadataContent | None = None):
+    content = [TextContent(type="text", text=text)]
+    if card is not None:
+        content.append(card)
+    await ctx.send(to, ChatMessage(content=content))
 
 
 @protocol.on_message(ChatMessage)
@@ -199,16 +138,40 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
 
     text = "".join(i.text for i in msg.content if isinstance(i, TextContent)).strip()
     text = MENTION_RE.sub("", text).strip()
-    ctx.logger.info("message to check (%d chars)" % len(text))
 
-    if len(text) < 15:
-        await reply(ctx, sender, HELP_TEXT)
+    # Card buttons come back as messages too.
+    action, data = cards.parse_action(text)
+    ctx.logger.info("incoming: action=%s, %d chars" % (action, len(text)))
+    if action == "ss_new":
+        await reply(ctx, sender, *cards.welcome_card())
+        return
+    if action == "ss_emergency" or (action is None and cards.is_emergency(text)):
+        await reply(ctx, sender, *cards.emergency_card())
+        return
+    if action == "ss_plan":
+        await reply(ctx, sender, cards.plan_text(data, ctx.storage.get("suspect_text") or ""))
+        return
+    if action == "ss_report":
+        await reply(ctx, sender, cards.REPORT_TEXT)
+        return
+    if action == "ss_evidence":
+        await reply(ctx, sender, cards.evidence_text(ctx.storage.get("last_evidence") or ""))
+        return
+    if action == "ss_example" and data.get("example") in cards.EXAMPLES:
+        text = cards.EXAMPLES[data["example"]][1]
+    elif action == "ss_check":
+        # Without the pasted text, the prose around the click is not the suspect message.
+        text = str(data.get("suspect_message") or "").strip()
+
+    if cards.is_greeting(text):
+        await reply(ctx, sender, *cards.welcome_card())
         return
 
     # Hosted/mailbox agents may handle messages independently — keep state in storage.
     ctx.storage.set("requester", sender)
     ctx.storage.set("suspect_text", text)
 
+    await reply(ctx, sender, cards.checking_text())
     # Hand off to the Investigator. The verdict is written when it replies.
     await ctx.send(INVESTIGATOR_ADDRESS, InvestigationRequest(message_text=text))
 
@@ -219,20 +182,21 @@ async def on_evidence(ctx: Context, sender: str, msg: InvestigationResult):
     suspect = ctx.storage.get("suspect_text") or ""
     if not requester:
         return
+    ctx.storage.set("last_evidence", msg.evidence)
 
     ctx.logger.info("evidence in — running prosecution and defence")
 
     try:
-        body = await asyncio.to_thread(assess, suspect, msg.evidence, msg.indicators, msg.ok)
+        text, card = await asyncio.to_thread(assess, suspect, msg.evidence, msg.indicators, msg.ok)
     except Exception as err:
         ctx.logger.exception("ASI:One failed: %s", err)
-        body = (
-            "🟡 **Couldn't finish the check**\n"
-            "Until you can verify it: don't click links, don't pay, don't share an OTP.\n\n"
-            "📞 Lost money? Call **1930** · cybercrime.gov.in"
+        text, card = (
+            "**Couldn't finish the check.** Until you can verify it: don't click links, "
+            "don't pay, don't share an OTP. Lost money? Call **1930**.",
+            None,
         )
 
-    await reply(ctx, requester, body)
+    await reply(ctx, requester, text, card)
 
 
 @protocol.on_message(ChatAcknowledgement)
