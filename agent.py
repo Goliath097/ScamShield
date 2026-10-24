@@ -150,7 +150,7 @@ async def on_evidence(ctx: Context, sender: str, msg: InvestigationResult):
             "For scam verdicts always include: don't pay or share OTP; call 1930.",
             "MESSAGE:\n%s\n\nEVIDENCE:\n%s\n\nPROSECUTION:\n%s\n\nDEFENCE:\n%s"
             % (suspect, msg.evidence, prosecution, defence),
-            max_tokens=400,
+            max_tokens=600,
         )
     except Exception as err:
         ctx.logger.exception("ASI:One failed: %s", err)
